@@ -58,138 +58,135 @@
       <section class="lg:col-span-3">
         <div class="card bg-base-100 border border-base-300 shadow-xl">
           <div class="card-body">
-            <h2 class="card-title">Configuration Form</h2>
+            <h2 class="card-title">New Session</h2>
+            <p class="text-sm opacity-60 -mt-2 mb-1">Launch a Zephyr binary in a Docker container using native_sim or QEMU, then view its output.</p>
             <form id="runForm" class="grid gap-4">
               <label class="form-control">
                 <div class="label">
-                  <span class="label-text">Target Type</span>
+                  <span class="label-text">Target</span>
+                  <span class="label-text-alt opacity-60">Emulation backend</span>
                 </div>
                 <select id="targetType" class="select select-bordered">
-                  <option value="native_sim" selected>native_sim</option>
-                  <option value="qemu">qemu (aarch64)</option>
+                  <option value="native_sim" selected>native_sim — x86 host binary</option>
+                  <option value="qemu">QEMU — emulated aarch64</option>
                 </select>
               </label>
 
               <label class="form-control" id="boardPresetControl" hidden>
                 <div class="label">
-                  <span class="label-text">QEMU Board Preset</span>
+                  <span class="label-text">Board</span>
+                  <span class="label-text-alt opacity-60">CPU and machine configuration</span>
                 </div>
                 <select id="boardPreset" class="select select-bordered">
-                  <option value="qemu_cortex_a53" selected>qemu_cortex_a53</option>
-                  <option value="qemu_kvm_arm64">qemu_kvm_arm64</option>
+                  <option value="qemu_cortex_a53" selected>qemu_cortex_a53 — Cortex-A53</option>
+                  <option value="qemu_kvm_arm64">qemu_kvm_arm64 — KVM-accelerated ARM64</option>
                 </select>
               </label>
 
               <label class="form-control">
                 <div class="label">
-                  <span class="label-text">Binary Path (absolute host path)</span>
+                  <span class="label-text">Binary path</span>
+                  <span class="label-text-alt opacity-60">Absolute path to the .elf on this host</span>
                 </div>
                 <input
                   id="binaryPath"
                   class="input input-bordered"
                   type="text"
-                  placeholder="/home/user/zephyrproject/app/build/zephyr/zephyr.elf"
+                  placeholder="/path/to/build/zephyr/zephyr.elf"
                   required
                 />
               </label>
 
               <label class="form-control">
                 <div class="label">
-                  <span class="label-text">Executable</span>
-                  <span class="label-text-alt">Use {binary} for native_sim</span>
-                </div>
-                <input id="executable" class="input input-bordered" type="text" value="{binary}" />
-              </label>
-
-              <label class="form-control">
-                <div class="label">
                   <span class="label-text">Mode</span>
+                  <span class="label-text-alt opacity-60" id="modeHint">Runs to completion, then collects output</span>
                 </div>
                 <select id="mode" class="select select-bordered">
-                  <option value="ephemeral" selected>ephemeral</option>
-                  <option value="interactive">interactive</option>
+                  <option value="ephemeral" selected>Ephemeral — auto-stops after timeout</option>
+                  <option value="interactive">Interactive — runs until you stop it</option>
                 </select>
               </label>
 
               <div tabindex="0" class="collapse collapse-arrow border border-base-300 bg-base-200/50 rounded-box">
                 <input type="checkbox" />
-                <div class="collapse-title text-sm font-semibold">Advanced Board Options</div>
+                <div id="advancedTitle" class="collapse-title text-sm font-semibold">Advanced native_sim Options</div>
                 <div class="collapse-content grid gap-4">
                   <div id="nativePanel" class="grid gap-4">
                     <div class="grid sm:grid-cols-2 gap-3">
                       <label class="label cursor-pointer justify-start gap-3">
                         <input id="realTime" type="checkbox" class="checkbox" />
-                        <span class="label-text">Enable real-time (-rt)</span>
+                        <span class="label-text">Real-time mode<span class="opacity-50 text-xs ml-1">Tie simulated clock to wall clock</span></span>
                       </label>
                       <label class="label cursor-pointer justify-start gap-3">
                         <input id="noColor" type="checkbox" class="checkbox" />
-                        <span class="label-text">Disable ANSI colors (-no-color)</span>
+                        <span class="label-text">Disable ANSI color output</span>
                       </label>
                       <label class="label cursor-pointer justify-start gap-3">
                         <input id="forceColor" type="checkbox" class="checkbox" />
-                        <span class="label-text">Force ANSI colors (-force-color)</span>
+                        <span class="label-text">Force ANSI color output</span>
                       </label>
                       <label class="label cursor-pointer justify-start gap-3">
                         <input id="rtcReset" type="checkbox" class="checkbox" />
-                        <span class="label-text">RTC reset (-rtc-reset)</span>
+                        <span class="label-text">Reset RTC on boot</span>
                       </label>
                     </div>
                     <div class="grid sm:grid-cols-2 gap-3">
                       <label class="form-control">
-                        <span class="label-text mb-1">Stop at seconds (-stop_at)</span>
+                        <span class="label-text mb-1">Stop at (seconds)</span>
                         <input id="stopAt" class="input input-bordered" type="number" min="0" placeholder="10" />
                       </label>
                       <label class="form-control">
-                        <span class="label-text mb-1">RT ratio (-rt-ratio)</span>
+                        <span class="label-text mb-1">Real-time ratio<span class="opacity-50 text-xs ml-1">1.0 = wall clock</span></span>
                         <input id="rtRatio" class="input input-bordered" type="number" step="0.1" min="0" placeholder="1.0" />
                       </label>
                       <label class="form-control">
-                        <span class="label-text mb-1">Seed (-seed)</span>
+                        <span class="label-text mb-1">RNG seed<span class="opacity-50 text-xs ml-1">For reproducibility</span></span>
                         <input id="seed" class="input input-bordered" type="number" placeholder="12345" />
                       </label>
                       <label class="form-control">
-                        <span class="label-text mb-1">RTC offset us (-rtc-offset)</span>
+                        <span class="label-text mb-1">RTC offset (µs)</span>
                         <input id="rtcOffset" class="input input-bordered" type="number" min="0" placeholder="0" />
                       </label>
                     </div>
                     <div class="grid sm:grid-cols-2 gap-3">
                       <label class="form-control">
-                        <span class="label-text mb-1">Test args (-testargs)</span>
+                        <span class="label-text mb-1">Test arguments<span class="opacity-50 text-xs ml-1">Space-separated args passed to the app</span></span>
                         <input id="testargs" class="input input-bordered" type="text" placeholder="foo=1 bar=2" />
                       </label>
                       <label class="form-control">
-                        <span class="label-text mb-1">Bluetooth device (-bt-dev)</span>
+                        <span class="label-text mb-1">Bluetooth device address</span>
                         <input id="btDev" class="input input-bordered" type="text" placeholder="127.0.0.1:1020" />
                       </label>
                     </div>
                   </div>
 
-                  <div id="qemuPanel" class="grid gap-4" hidden>
+                  <div id="qemuPanel" class="grid gap-4" style="display:none">
                     <div class="grid sm:grid-cols-2 gap-3">
                       <label class="label cursor-pointer justify-start gap-3">
                         <input id="qemuGdb" type="checkbox" class="checkbox" />
-                        <span class="label-text">Enable GDB debug (-s -S)</span>
+                        <span class="label-text">Enable GDB server<span class="opacity-50 text-xs ml-1">Pause at start, listen on :1234</span></span>
                       </label>
                       <label class="label cursor-pointer justify-start gap-3">
                         <input id="qemuDeterministic" type="checkbox" class="checkbox" />
-                        <span class="label-text">Deterministic timing (-icount)</span>
+                        <span class="label-text">Deterministic timing<span class="opacity-50 text-xs ml-1">Instruction counting for reproducibility</span></span>
                       </label>
                       <label class="label cursor-pointer justify-start gap-3">
                         <input id="qemuSecure" type="checkbox" class="checkbox" />
-                        <span class="label-text">Secure mode (machine secure=on)</span>
+                        <span class="label-text">TrustZone / Secure mode</span>
                       </label>
                       <label class="label cursor-pointer justify-start gap-3">
                         <input id="qemuXip" type="checkbox" class="checkbox" />
-                        <span class="label-text">XIP mode (-bios)</span>
+                        <span class="label-text">Execute in place (XIP)<span class="opacity-50 text-xs ml-1">Load as BIOS firmware instead of kernel</span></span>
                       </label>
                     </div>
                     <div class="grid sm:grid-cols-2 gap-3">
                       <label class="form-control">
-                        <span class="label-text mb-1">Memory MB (-m)</span>
+                        <span class="label-text mb-1">Memory (MB)</span>
                         <input id="qemuMemory" class="input input-bordered" type="number" min="1" placeholder="256" />
                       </label>
                       <label class="form-control">
-                        <span class="label-text mb-1">SMP CPUs (-smp cpus=N)</span>
+                        <span class="label-text mb-1">CPU count (SMP)</span>
                         <input id="qemuSmp" class="input input-bordered" type="number" min="1" placeholder="2" />
                       </label>
                     </div>
@@ -198,20 +195,20 @@
                   <div class="grid sm:grid-cols-2 gap-3">
                     <label class="label cursor-pointer justify-start gap-3">
                       <input id="disableNetwork" type="checkbox" class="checkbox" />
-                      <span class="label-text">Disable container networking</span>
+                      <span class="label-text">Disable networking<span class="opacity-50 text-xs ml-1">Isolate container from host network</span></span>
                     </label>
                     <label class="form-control sm:col-span-1">
-                      <span class="label-text mb-1">Extra args (raw fallback)</span>
+                      <span class="label-text mb-1">Extra arguments<span class="opacity-50 text-xs ml-1">Raw CLI flags appended to the command</span></span>
                       <input id="extraArgs" class="input input-bordered" type="text" placeholder="--myflag=1 --other={port}" />
                     </label>
                   </div>
                 </div>
               </div>
 
-              <label class="form-control">
+              <label class="form-control" id="timeoutControl">
                 <div class="label">
-                  <span class="label-text">Ephemeral timeout (seconds)</span>
-                  <span class="label-text-alt opacity-60">Max wait before auto-kill</span>
+                  <span class="label-text">Timeout (seconds)</span>
+                  <span class="label-text-alt opacity-60">Kill the container if it hasn’t exited by this time</span>
                 </div>
                 <input id="ephemeralTimeout" class="input input-bordered" type="number" min="1" value="30" />
               </label>
@@ -225,7 +222,7 @@
               <div class="card-actions justify-end pt-2">
                 <button id="submitBtn" class="btn btn-primary" type="submit">
                   <span id="submitSpinner" class="loading loading-spinner loading-sm hidden"></span>
-                  Run
+                  Start Session
                 </button>
               </div>
             </form>
@@ -240,14 +237,14 @@
               <div class="px-3 py-2 border-b border-base-300">
                 <h2 class="font-semibold text-sm">Sessions</h2>
               </div>
-              <div id="sessionsEmpty" class="px-3 py-2 text-sm opacity-60">No sessions yet.</div>
+              <div id="sessionsEmpty" class="px-3 py-2 text-sm opacity-60">No sessions yet — submit the form above to start one.</div>
               <div id="sessionsList" class="overflow-y-auto flex-1 flex flex-col"></div>
             </div>
             <div class="flex-1 flex flex-col min-w-0 bg-neutral text-neutral-content">
               <div id="outputHeader" class="px-4 py-2 border-b border-white/10 text-xs opacity-60 flex-shrink-0">
                 Select a session to view output
               </div>
-              <pre id="sessionOutput" class="flex-1 p-4 overflow-auto text-sm font-mono whitespace-pre-wrap">Select a session from the list.</pre>
+              <pre id="sessionOutput" class="flex-1 p-4 overflow-auto text-sm font-mono whitespace-pre-wrap">Output will appear here after a session starts.</pre>
             </div>
           </div>
         </div>
@@ -260,9 +257,12 @@
       const targetTypeEl = document.getElementById("targetType");
       const boardPresetControl = document.getElementById("boardPresetControl");
       const boardPresetEl = document.getElementById("boardPreset");
-      const executableEl = document.getElementById("executable");
       const nativePanel = document.getElementById("nativePanel");
       const qemuPanel = document.getElementById("qemuPanel");
+      const advancedTitle = document.getElementById("advancedTitle");
+      const modeEl = document.getElementById("mode");
+      const modeHint = document.getElementById("modeHint");
+      const timeoutControl = document.getElementById("timeoutControl");
       const runForm = document.getElementById("runForm");
       const submitBtn = document.getElementById("submitBtn");
       const submitSpinner = document.getElementById("submitSpinner");
@@ -304,18 +304,17 @@
       function updateTargetUI() {
         const isQemu = targetTypeEl.value === "qemu";
         boardPresetControl.hidden = !isQemu;
-        nativePanel.hidden = isQemu;
-        qemuPanel.hidden = !isQemu;
+        nativePanel.style.display = isQemu ? "none" : "";
+        qemuPanel.style.display = isQemu ? "" : "none";
+        advancedTitle.textContent = isQemu ? "Advanced QEMU Options" : "Advanced native_sim Options";
+      }
 
-        if (isQemu) {
-          executableEl.value = "qemu-system-aarch64";
-          executableEl.setAttribute("readonly", "readonly");
-        } else {
-          executableEl.removeAttribute("readonly");
-          if (!executableEl.value.trim() || executableEl.value.trim() === "qemu-system-aarch64") {
-            executableEl.value = "{binary}";
-          }
-        }
+      function updateModeUI() {
+        const isInteractive = modeEl.value === "interactive";
+        timeoutControl.hidden = isInteractive;
+        modeHint.textContent = isInteractive
+          ? "Keeps running until you manually stop it"
+          : "Runs to completion, then collects output";
       }
 
       function setSubmitLoading(isLoading) {
@@ -363,7 +362,7 @@
       function renderOutput() {
         if (!selectedSessionId || !activeSessions.has(selectedSessionId)) {
           outputHeader.textContent = "Select a session to view output";
-          sessionOutput.textContent = "Select a session from the list.";
+          sessionOutput.textContent = "Output will appear here after a session starts.";
           return;
         }
         const s = activeSessions.get(selectedSessionId);
@@ -549,6 +548,7 @@
       });
 
       targetTypeEl.addEventListener("change", updateTargetUI);
+      modeEl.addEventListener("change", updateModeUI);
 
       runForm.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -556,7 +556,7 @@
         const targetType = targetTypeEl.value;
         const payload = {
           binary_path: document.getElementById("binaryPath").value.trim(),
-          executable: executableEl.value.trim() || "{binary}",
+          executable: targetType === "qemu" ? "qemu-system-aarch64" : "{binary}",
           mode: document.getElementById("mode").value,
           target_type: targetType,
           board_preset: targetType === "qemu" ? boardPresetEl.value : undefined,
@@ -636,6 +636,7 @@
 
       initTheme();
       updateTargetUI();
+      updateModeUI();
       renderSessions();
       renderOutput();
     </script>

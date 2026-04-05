@@ -103,8 +103,14 @@ def parse_extra_args(extra_args: Any) -> list[str]:
 
 def normalize_target_type(payload: dict[str, Any]) -> str:
     target_type = str(payload.get("target_type", "")).strip().lower()
+    if target_type and target_type not in {"native_sim", "qemu"} and target_type not in QEMU_PRESETS:
+        raise ValueError(f"Unsupported target_type: {target_type}")
+
     if target_type in {"native_sim", "qemu"}:
         return target_type
+
+    if target_type in QEMU_PRESETS:
+        return "qemu"
 
     board_preset = str(payload.get("board_preset", "")).strip().lower()
     if board_preset in QEMU_PRESETS:

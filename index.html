@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zephyr Test Server</title>
+
+    <link
+      href="https://cdn.jsdelivr.net/npm/daisyui@latest/dist/full.min.css"
+      rel="stylesheet"
+      type="text/css"
+    />
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+      body {
+        background-image: radial-gradient(circle at 15% 20%, rgba(20, 184, 166, 0.15), transparent 40%),
+          radial-gradient(circle at 80% 0%, rgba(59, 130, 246, 0.2), transparent 35%),
+          linear-gradient(160deg, rgba(17, 24, 39, 0.04), rgba(17, 24, 39, 0));
+      }
+
+      .log-window {
+        max-height: 24rem;
+        overflow-y: auto;
+        white-space: pre-wrap;
+      }
+
+      .card-title-badge {
+        font-family: "ui-monospace", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+          monospace;
+      }
+    </style>
+  </head>
+  <body class="min-h-screen">
+    <nav class="navbar bg-base-100/80 backdrop-blur border-b border-base-300 sticky top-0 z-10">
+      <div class="flex-1">
+        <a class="text-xl font-semibold tracking-tight">Zephyr Test Server</a>
+      </div>
+      <div class="flex-none gap-3">
+        <span class="text-sm opacity-80">Theme</span>
+        <label class="swap swap-rotate">
+          <input id="themeToggle" type="checkbox" />
+          <svg class="swap-on h-6 w-6 fill-current" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path
+              d="M5.64,17l-.71.71a1,1,0,0,0,1.41,1.41l.71-.71A1,1,0,0,0,5.64,17ZM5,12a1,1,0,0,0-1-1H3a1,1,0,0,0,0,2H4A1,1,0,0,0,5,12ZM12,5a1,1,0,0,0,1-1V3a1,1,0,0,0-2,0V4A1,1,0,0,0,12,5Zm6.36,1.05a1,1,0,0,0,1.41,0l.71-.71a1,1,0,1,0-1.41-1.41l-.71.71A1,1,0,0,0,18.36,6.05ZM21,11H20a1,1,0,0,0,0,2h1a1,1,0,0,0,0-2Zm-9,8a1,1,0,0,0-1,1v1a1,1,0,0,0,2,0V20A1,1,0,0,0,12,19Zm7.07-1.29a1,1,0,0,0-1.41,0l-.71.71a1,1,0,0,0,1.41,1.41l.71-.71A1,1,0,0,0,19.07,17.71ZM12,6.5A5.5,5.5,0,1,0,17.5,12,5.5,5.5,0,0,0,12,6.5Z"
+            />
+          </svg>
+          <svg class="swap-off h-6 w-6 fill-current" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path
+              d="M21.64,13A1,1,0,0,0,20,12.36a8.05,8.05,0,0,1-3.37.73A8.15,8.15,0,0,1,8.08,4.49,8.59,8.59,0,0,1,8.36,2,1,1,0,0,0,7,0.36,10.14,10.14,0,1,0,22,14.05,1,1,0,0,0,21.64,13Z"
+            />
+          </svg>
+        </label>
+      </div>
+    </nav>
+
+    <main class="max-w-6xl mx-auto px-4 py-8 grid gap-6 lg:grid-cols-3">
+      <section class="lg:col-span-3">
+        <div class="card bg-base-100 border border-base-300 shadow-xl">
+          <div class="card-body">
+            <h2 class="card-title">Configuration Form</h2>
+            <form id="runForm" class="grid gap-4">
+              <label class="form-control">
+                <div class="label">
+                  <span class="label-text">Target Type</span>
+                </div>
+                <select id="targetType" class="select select-bordered">
+                  <option value="native_sim" selected>native_sim</option>
+                  <option value="qemu">qemu (aarch64)</option>
+                </select>
+              </label>
+
+              <label class="form-control" id="boardPresetControl" hidden>
+                <div class="label">
+                  <span class="label-text">QEMU Board Preset</span>
+                </div>
+                <select id="boardPreset" class="select select-bordered">
+                  <option value="qemu_cortex_a53" selected>qemu_cortex_a53</option>
+                  <option value="qemu_kvm_arm64">qemu_kvm_arm64</option>
+                </select>
+              </label>
+
+              <label class="form-control">
+                <div class="label">
+                  <span class="label-text">Binary Path (absolute host path)</span>
+                </div>
+                <input
+                  id="binaryPath"
+                  class="input input-bordered"
+                  type="text"
+                  placeholder="/home/user/zephyrproject/app/build/zephyr/zephyr.elf"
+                  required
+                />
+              </label>
+
+              <label class="form-control">
+                <div class="label">
+                  <span class="label-text">Executable</span>
+                  <span class="label-text-alt">Use {binary} for native_sim</span>
+                </div>
+                <input id="executable" class="input input-bordered" type="text" value="{binary}" />
+              </label>
+
+              <label class="form-control">
+                <div class="label">
+                  <span class="label-text">Mode</span>
+                </div>
+                <select id="mode" class="select select-bordered">
+                  <option value="ephemeral" selected>ephemeral</option>
+                  <option value="interactive">interactive</option>
+                </select>
+              </label>
+
+              <div tabindex="0" class="collapse collapse-arrow border border-base-300 bg-base-200/50 rounded-box">
+                <input type="checkbox" />
+                <div class="collapse-title text-sm font-semibold">Advanced Board Options</div>
+                <div class="collapse-content grid gap-4">
+                  <div id="nativePanel" class="grid gap-4">
+                    <div class="grid sm:grid-cols-2 gap-3">
+                      <label class="label cursor-pointer justify-start gap-3">
+                        <input id="realTime" type="checkbox" class="checkbox" />
+                        <span class="label-text">Enable real-time (-rt)</span>
+                      </label>
+                      <label class="label cursor-pointer justify-start gap-3">
+                        <input id="noColor" type="checkbox" class="checkbox" />
+                        <span class="label-text">Disable ANSI colors (-no-color)</span>
+                      </label>
+                      <label class="label cursor-pointer justify-start gap-3">
+                        <input id="forceColor" type="checkbox" class="checkbox" />
+                        <span class="label-text">Force ANSI colors (-force-color)</span>
+                      </label>
+                      <label class="label cursor-pointer justify-start gap-3">
+                        <input id="rtcReset" type="checkbox" class="checkbox" />
+                        <span class="label-text">RTC reset (-rtc-reset)</span>
+                      </label>
+                    </div>
+                    <div class="grid sm:grid-cols-2 gap-3">
+                      <label class="form-control">
+                        <span class="label-text mb-1">Stop at seconds (-stop_at)</span>
+                        <input id="stopAt" class="input input-bordered" type="number" min="0" placeholder="10" />
+                      </label>
+                      <label class="form-control">
+                        <span class="label-text mb-1">RT ratio (-rt-ratio)</span>
+                        <input id="rtRatio" class="input input-bordered" type="number" step="0.1" min="0" placeholder="1.0" />
+                      </label>
+                      <label class="form-control">
+                        <span class="label-text mb-1">Seed (-seed)</span>
+                        <input id="seed" class="input input-bordered" type="number" placeholder="12345" />
+                      </label>
+                      <label class="form-control">
+                        <span class="label-text mb-1">RTC offset us (-rtc-offset)</span>
+                        <input id="rtcOffset" class="input input-bordered" type="number" min="0" placeholder="0" />
+                      </label>
+                    </div>
+                    <div class="grid sm:grid-cols-2 gap-3">
+                      <label class="form-control">
+                        <span class="label-text mb-1">Test args (-testargs)</span>
+                        <input id="testargs" class="input input-bordered" type="text" placeholder="foo=1 bar=2" />
+                      </label>
+                      <label class="form-control">
+                        <span class="label-text mb-1">Bluetooth device (-bt-dev)</span>
+                        <input id="btDev" class="input input-bordered" type="text" placeholder="127.0.0.1:1020" />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div id="qemuPanel" class="grid gap-4" hidden>
+                    <div class="grid sm:grid-cols-2 gap-3">
+                      <label class="label cursor-pointer justify-start gap-3">
+                        <input id="qemuGdb" type="checkbox" class="checkbox" />
+                        <span class="label-text">Enable GDB debug (-s -S)</span>
+                      </label>
+                      <label class="label cursor-pointer justify-start gap-3">
+                        <input id="qemuDeterministic" type="checkbox" class="checkbox" />
+                        <span class="label-text">Deterministic timing (-icount)</span>
+                      </label>
+                      <label class="label cursor-pointer justify-start gap-3">
+                        <input id="qemuSecure" type="checkbox" class="checkbox" />
+                        <span class="label-text">Secure mode (machine secure=on)</span>
+                      </label>
+                      <label class="label cursor-pointer justify-start gap-3">
+                        <input id="qemuXip" type="checkbox" class="checkbox" />
+                        <span class="label-text">XIP mode (-bios)</span>
+                      </label>
+                    </div>
+                    <div class="grid sm:grid-cols-2 gap-3">
+                      <label class="form-control">
+                        <span class="label-text mb-1">Memory MB (-m)</span>
+                        <input id="qemuMemory" class="input input-bordered" type="number" min="1" placeholder="256" />
+                      </label>
+                      <label class="form-control">
+                        <span class="label-text mb-1">SMP CPUs (-smp cpus=N)</span>
+                        <input id="qemuSmp" class="input input-bordered" type="number" min="1" placeholder="2" />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div class="grid sm:grid-cols-2 gap-3">
+                    <label class="label cursor-pointer justify-start gap-3">
+                      <input id="disableNetwork" type="checkbox" class="checkbox" />
+                      <span class="label-text">Disable container networking</span>
+                    </label>
+                    <label class="form-control sm:col-span-1">
+                      <span class="label-text mb-1">Extra args (raw fallback)</span>
+                      <input id="extraArgs" class="input input-bordered" type="text" placeholder="--myflag=1 --other={port}" />
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <label class="form-control">
+                <div class="label">
+                  <span class="label-text">Ephemeral timeout (seconds)</span>
+                  <span class="label-text-alt opacity-60">Max wait before auto-kill</span>
+                </div>
+                <input id="ephemeralTimeout" class="input input-bordered" type="number" min="1" value="30" />
+              </label>
+
+              <div id="formError" role="alert" class="alert alert-error hidden">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span id="formErrorMsg"></span>
+              </div>
+              <div class="card-actions justify-end pt-2">
+                <button id="submitBtn" class="btn btn-primary" type="submit">
+                  <span id="submitSpinner" class="loading loading-spinner loading-sm hidden"></span>
+                  Run
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section class="lg:col-span-3">
+        <div class="card bg-base-100 border border-base-300 shadow-xl overflow-hidden">
+          <div class="flex" style="min-height:22rem; max-height:32rem">
+            <div class="w-56 flex-shrink-0 border-r border-base-300 flex flex-col">
+              <div class="px-3 py-2 border-b border-base-300">
+                <h2 class="font-semibold text-sm">Sessions</h2>
+              </div>
+              <div id="sessionsEmpty" class="px-3 py-2 text-sm opacity-60">No sessions yet.</div>
+              <div id="sessionsList" class="overflow-y-auto flex-1 flex flex-col"></div>
+            </div>
+            <div class="flex-1 flex flex-col min-w-0 bg-neutral text-neutral-content">
+              <div id="outputHeader" class="px-4 py-2 border-b border-white/10 text-xs opacity-60 flex-shrink-0">
+                Select a session to view output
+              </div>
+              <pre id="sessionOutput" class="flex-1 p-4 overflow-auto text-sm font-mono whitespace-pre-wrap">Select a session from the list.</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const htmlEl = document.documentElement;
+      const themeToggle = document.getElementById("themeToggle");
+      const targetTypeEl = document.getElementById("targetType");
+      const boardPresetControl = document.getElementById("boardPresetControl");
+      const boardPresetEl = document.getElementById("boardPreset");
+      const executableEl = document.getElementById("executable");
+      const nativePanel = document.getElementById("nativePanel");
+      const qemuPanel = document.getElementById("qemuPanel");
+      const runForm = document.getElementById("runForm");
+      const submitBtn = document.getElementById("submitBtn");
+      const submitSpinner = document.getElementById("submitSpinner");
+      const sessionsList = document.getElementById("sessionsList");
+      const sessionsEmpty = document.getElementById("sessionsEmpty");
+      const sessionOutput = document.getElementById("sessionOutput");
+      const outputHeader = document.getElementById("outputHeader");
+      const formError = document.getElementById("formError");
+      const formErrorMsg = document.getElementById("formErrorMsg");
+
+      function showFormError(msg) {
+        formErrorMsg.textContent = msg;
+        formError.classList.remove("hidden");
+      }
+
+      function clearFormError() {
+        formError.classList.add("hidden");
+        formErrorMsg.textContent = "";
+      }
+
+      const activeSessions = new Map();
+      let selectedSessionId = null;
+
+      function applyTheme(theme) {
+        htmlEl.setAttribute("data-theme", theme);
+        themeToggle.checked = theme === "dark";
+      }
+
+      function initTheme() {
+        const saved = localStorage.getItem("zephyr_theme");
+        if (saved === "light" || saved === "dark") {
+          applyTheme(saved);
+          return;
+        }
+        const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        applyTheme(prefersDark ? "dark" : "light");
+      }
+
+      function updateTargetUI() {
+        const isQemu = targetTypeEl.value === "qemu";
+        boardPresetControl.hidden = !isQemu;
+        nativePanel.hidden = isQemu;
+        qemuPanel.hidden = !isQemu;
+
+        if (isQemu) {
+          executableEl.value = "qemu-system-aarch64";
+          executableEl.setAttribute("readonly", "readonly");
+        } else {
+          executableEl.removeAttribute("readonly");
+          if (!executableEl.value.trim() || executableEl.value.trim() === "qemu-system-aarch64") {
+            executableEl.value = "{binary}";
+          }
+        }
+      }
+
+      function setSubmitLoading(isLoading) {
+        submitBtn.disabled = isLoading;
+        submitBtn.classList.toggle("btn-disabled", isLoading);
+        submitSpinner.classList.toggle("hidden", !isLoading);
+      }
+
+      function appendSession(result) {
+        activeSessions.set(result.container_id, {
+          ...result,
+          status: "running",
+          output: null,
+          exit_code: null,
+        });
+        renderSessions();
+        selectSession(result.container_id);
+      }
+
+      function finishSession(id, waitResult) {
+        const session = activeSessions.get(id);
+        if (!session) return;
+        session.status = waitResult.status;
+        session.exit_code = waitResult.exit_code;
+        session.output = waitResult.output;
+        renderSessions();
+        if (selectedSessionId === id) renderOutput();
+      }
+
+      function removeSession(containerId) {
+        activeSessions.delete(containerId);
+        if (selectedSessionId === containerId) {
+          selectedSessionId = null;
+          renderOutput();
+        }
+        renderSessions();
+      }
+
+      function selectSession(id) {
+        selectedSessionId = id;
+        renderSessions();
+        renderOutput();
+      }
+
+      function renderOutput() {
+        if (!selectedSessionId || !activeSessions.has(selectedSessionId)) {
+          outputHeader.textContent = "Select a session to view output";
+          sessionOutput.textContent = "Select a session from the list.";
+          return;
+        }
+        const s = activeSessions.get(selectedSessionId);
+        const shortId = s.container_id.slice(0, 12);
+        outputHeader.innerHTML =
+          `<span class="font-mono">${shortId}</span>` +
+          `<span class="badge badge-xs badge-outline ml-2">${s.target_type}</span>` +
+          `<span class="badge badge-xs ml-1">${s.mode}</span>` +
+          `<span class="opacity-50 ml-2 hidden sm:inline">${s.container_id}</span>`;
+        if (s.status === "running") {
+          sessionOutput.textContent = "\u23f3 Waiting for output\u2026";
+        } else {
+          const ruler = "\u2500".repeat(48);
+          const header = `Status: ${s.status}   Exit Code: ${s.exit_code ?? "\u2014"}\n${ruler}\n`;
+          sessionOutput.textContent = header + (s.output || "(no output)");
+          sessionOutput.scrollTop = sessionOutput.scrollHeight;
+        }
+      }
+
+      function renderSessions() {
+        sessionsList.innerHTML = "";
+        sessionsEmpty.style.display = activeSessions.size ? "none" : "block";
+
+        const statusColors = {
+          running: "badge-info",
+          completed: "badge-success",
+          timeout: "badge-warning",
+          killed: "badge-error",
+          stopped: "badge-ghost",
+        };
+
+        for (const session of activeSessions.values()) {
+          const isRunning = session.status === "running";
+          const isSelected = session.container_id === selectedSessionId;
+          const shortId = session.container_id.slice(0, 12);
+          const statusColor = statusColors[session.status] || "badge-ghost";
+          const statusInner = isRunning
+            ? `<span class="loading loading-spinner loading-xs mr-0.5"></span>${session.status}`
+            : session.status;
+          const modeColor = session.mode === "ephemeral" ? "badge-warning" : "badge-info";
+
+          let actionButtons;
+          if (isRunning) {
+            actionButtons =
+              (session.mode === "interactive"
+                ? `<button class="btn btn-warning btn-xs btn-outline" data-stop-id="${session.container_id}">Stop</button>`
+                : "") +
+              `<button class="btn btn-error btn-xs" data-kill-id="${session.container_id}">Kill</button>`;
+          } else {
+            actionButtons = `<button class="btn btn-ghost btn-xs btn-square" data-dismiss-id="${session.container_id}" title="Dismiss">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>`;
+          }
+
+          const row = document.createElement("div");
+          row.className = `session-row cursor-pointer px-3 py-2 border-b border-base-300 transition-colors hover:bg-base-200${
+            isSelected ? " bg-primary/10 border-l-2 border-l-primary" : ""
+          }`;
+          row.dataset.selectId = session.container_id;
+          row.innerHTML = `
+            <div class="flex items-start justify-between gap-1">
+              <div class="min-w-0 flex-1">
+                <div class="flex gap-1 flex-wrap mb-0.5">
+                  <span class="badge badge-xs badge-outline">${session.target_type}</span>
+                  <span class="badge badge-xs ${modeColor} badge-outline">${session.mode}</span>
+                  <span class="badge badge-xs ${statusColor}">${statusInner}</span>
+                </div>
+                <div class="text-xs font-mono opacity-70">${shortId}</div>
+              </div>
+              <div class="flex gap-1 flex-shrink-0">${actionButtons}</div>
+            </div>
+          `;
+          sessionsList.appendChild(row);
+        }
+      }
+
+      function parseMaybeNumber(value) {
+        const v = String(value || "").trim();
+        if (!v) {
+          return undefined;
+        }
+        const n = Number(v);
+        return Number.isFinite(n) ? n : undefined;
+      }
+
+      function buildStructuredOptions(targetType) {
+        const shared = {
+          disable_network: document.getElementById("disableNetwork").checked,
+        };
+
+        if (targetType === "qemu") {
+          return {
+            ...shared,
+            gdb_debug: document.getElementById("qemuGdb").checked,
+            deterministic: document.getElementById("qemuDeterministic").checked,
+            secure_mode: document.getElementById("qemuSecure").checked,
+            xip_mode: document.getElementById("qemuXip").checked,
+            memory_mb: parseMaybeNumber(document.getElementById("qemuMemory").value),
+            smp_cpus: parseMaybeNumber(document.getElementById("qemuSmp").value),
+          };
+        }
+
+        return {
+          ...shared,
+          real_time: document.getElementById("realTime").checked,
+          no_color: document.getElementById("noColor").checked,
+          force_color: document.getElementById("forceColor").checked,
+          rtc_reset: document.getElementById("rtcReset").checked,
+          stop_at: parseMaybeNumber(document.getElementById("stopAt").value),
+          rt_ratio: parseMaybeNumber(document.getElementById("rtRatio").value),
+          seed: parseMaybeNumber(document.getElementById("seed").value),
+          rtc_offset: parseMaybeNumber(document.getElementById("rtcOffset").value),
+          testargs: document.getElementById("testargs").value.trim() || undefined,
+          bt_dev: document.getElementById("btDev").value.trim() || undefined,
+        };
+      }
+
+      async function waitRequest(containerId, timeout) {
+        const response = await fetch("/wait", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ container_id: containerId, timeout }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || "Wait failed");
+        }
+        return data;
+      }
+
+      async function runRequest(payload) {
+        const response = await fetch("/run", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || "Request failed");
+        }
+        return data;
+      }
+
+      async function stopRequest(containerId) {
+        const response = await fetch("/stop", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ container_id: containerId }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || "Stop failed");
+        }
+        return data;
+      }
+
+      async function killRequest(containerId) {
+        const response = await fetch("/kill", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ container_id: containerId }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || "Kill failed");
+        }
+        return data;
+      }
+
+      themeToggle.addEventListener("change", () => {
+        const newTheme = themeToggle.checked ? "dark" : "light";
+        applyTheme(newTheme);
+        localStorage.setItem("zephyr_theme", newTheme);
+      });
+
+      targetTypeEl.addEventListener("change", updateTargetUI);
+
+      runForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        const targetType = targetTypeEl.value;
+        const payload = {
+          binary_path: document.getElementById("binaryPath").value.trim(),
+          executable: executableEl.value.trim() || "{binary}",
+          mode: document.getElementById("mode").value,
+          target_type: targetType,
+          board_preset: targetType === "qemu" ? boardPresetEl.value : undefined,
+          structured_options: buildStructuredOptions(targetType),
+          extra_args: document.getElementById("extraArgs").value,
+          timeout: Number(document.getElementById("ephemeralTimeout").value) || 30,
+        };
+
+        try {
+          setSubmitLoading(true);
+          clearFormError();
+          const result = await runRequest(payload);
+          appendSession(result); // adds to list and auto-selects
+
+          if (result.mode === "ephemeral") {
+            waitRequest(result.container_id, result.timeout || payload.timeout || 30)
+              .then((waitResult) => { finishSession(result.container_id, waitResult); })
+              .catch((err) => {
+                finishSession(result.container_id, {
+                  status: "error",
+                  exit_code: -1,
+                  output: `Error: ${err.message}`,
+                });
+              });
+          }
+        } catch (error) {
+          showFormError(error.message);
+        } finally {
+          setSubmitLoading(false);
+        }
+      });
+
+      sessionsList.addEventListener("click", async (event) => {
+        const target = event.target;
+
+        const stopId = target.getAttribute && target.getAttribute("data-stop-id");
+        const killId = target.getAttribute && target.getAttribute("data-kill-id");
+        const dismissId = target.getAttribute && target.getAttribute("data-dismiss-id");
+
+        if (dismissId) {
+          removeSession(dismissId);
+          return;
+        }
+
+        if (stopId || killId) {
+          const containerId = stopId || killId;
+          target.disabled = true;
+          target.classList.add("btn-disabled");
+          try {
+            if (killId) {
+              await killRequest(containerId);
+              // For interactive: mark stopped; ephemeral waitRequest will resolve via SIGKILL exit code
+              const session = activeSessions.get(containerId);
+              if (session && session.mode === "interactive") {
+                finishSession(containerId, { status: "killed", exit_code: 137, output: "(killed by user)" });
+              }
+            } else {
+              await stopRequest(containerId);
+              finishSession(containerId, { status: "stopped", exit_code: null, output: "(stopped by user)" });
+            }
+          } catch (error) {
+            target.disabled = false;
+            target.classList.remove("btn-disabled");
+            if (selectedSessionId === containerId) {
+              sessionOutput.textContent = `Error: ${error.message}`;
+            }
+          }
+          return;
+        }
+
+        // Row click → select session
+        const row = target.closest(".session-row");
+        if (row && row.dataset.selectId) {
+          selectSession(row.dataset.selectId);
+        }
+      });
+
+      initTheme();
+      updateTargetUI();
+      renderSessions();
+      renderOutput();
+    </script>
+  </body>
+</html>

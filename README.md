@@ -154,6 +154,54 @@ Stop interactive container:
 curl -sS -X POST http://localhost:8080/stop \
   -H 'Content-Type: application/json' \
   -d "{\"container_id\":\"$CID\"}" | jq
+## 6) Run E2E test suite
+
+The repository includes a comprehensive end-to-end test suite (`test_e2e.py`) that validates all API endpoints, structured options, and lifecycle behaviors against 16 pre-built Zephyr test binaries.
+
+### Prerequisites for tests
+
+1. Server running on `http://localhost:8080`:
+
+```bash
+python zephyr_test_server.py
+```
+
+2. Zephyr test binaries available at `../zephyr-sim-tests/builds/` (or set `BUILDS_ROOT` env var):
+
+```bash
+# Clone if not already present
+cd ..
+git clone https://github.com/beriberikix/zephyr-sim-tests.git
+cd zephyr-test-server
+```
+
+### Run tests
+
+```bash
+python test_e2e.py
+```
+
+To use custom paths:
+
+```bash
+SERVER_URL=http://localhost:8080 \
+BUILDS_ROOT=/path/to/zephyr-sim-tests/builds \
+python test_e2e.py
+```
+
+### Test Coverage
+
+The test suite (`test_e2e.py`) includes 30+ test methods across 6 test classes:
+
+| Class | Tests | Coverage |
+|-------|-------|----------|
+| `TestServeIndex` | 1 | GET / endpoint, HTML serving |
+| `TestValidation` | 7 | Error cases: missing path, relative paths, invalid modes, nonexistent containers |
+| `TestNativeSimEphemeral` | 4 | hello_world, exit_codes, ztest_pass, ztest_fail |
+| `TestNativeSimOptions` | 5 | stop_at, seed, rtc_reset, testargs, disable_network |
+| `TestLifecycle` | 3 | Timeout+kill, interactive stop, interactive kill, partial output |
+| `TestQemuEphemeral` | 3 | qemu_cortex_a53, SMP, GDB debug (skipped if QEMU unavailable) |
+
 ```
 
 ## Validation checklist

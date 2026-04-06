@@ -7,10 +7,14 @@ Host-side testing orchestrator for Zephyr binaries using Docker.
 - Runs Zephyr binaries through an HTTP API on port 8080.
 - Supports two execution styles:
   - `ephemeral`: run and return logs + exit code
-  - `interactive`: run detached and stop later
+  - `interactive`: run with live WebSocket I/O and stop later
 - Supports:
   - `native_sim` binaries (run directly inside container)
   - QEMU aarch64 presets (`qemu_cortex_a53`, `qemu_kvm_arm64`)
+- For interactive native_sim shell apps, use Advanced native_sim options:
+  - `Map UART to stdin/stdout` to pass `-<stem>_stdinout` at runtime.
+  - `stdinout option stem` defaults to `uart` (some builds may use other stems).
+  - Default behavior for `mode=interactive` + `target_type=native_sim` enables this mapping unless overridden in `structured_options`.
 - Serves a single-file web UI from `index.html`.
 
 ## Project files
@@ -32,7 +36,7 @@ Host-side testing orchestrator for Zephyr binaries using Docker.
 cd /home/jonathan.beri@canonical.com/code/zephyr-test-server
 uv venv .venv
 source .venv/bin/activate
-uv pip install docker
+uv pip install docker simple-websocket
 ```
 
 ## 2) Build the runtime image
@@ -199,7 +203,7 @@ The test suite (`test_e2e.py`) includes 30+ test methods across 6 test classes:
 | `TestValidation` | 7 | Error cases: missing path, relative paths, invalid modes, nonexistent containers |
 | `TestNativeSimEphemeral` | 4 | hello_world, exit_codes, ztest_pass, ztest_fail |
 | `TestNativeSimOptions` | 5 | stop_at, seed, rtc_reset, testargs, disable_network |
-| `TestLifecycle` | 3 | Timeout+kill, interactive stop, interactive kill, partial output |
+| `TestLifecycle` | 5 | Timeout+kill, interactive ws_path contract, native_sim stdinout default mapping, interactive stop/kill, partial output |
 | `TestQemuEphemeral` | 3 | qemu_cortex_a53, SMP, GDB debug (skipped if QEMU unavailable) |
 
 ```

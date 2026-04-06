@@ -4,7 +4,7 @@
 Environment setup (dependency-light):
 1) uv venv .venv
 2) source .venv/bin/activate
-3) uv pip install docker
+3) uv pip install docker simple-websocket
 4) python zephyr_server.py
 """
 
@@ -15,13 +15,18 @@ import os
 import shlex
 import socket
 import socketserver
+import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import docker
 from docker.errors import DockerException, NotFound
+from simple_websocket import ConnectionClosed
+from simple_websocket import Server as WebSocketServer
 
 HOST = "0.0.0.0"
 PORT = 8080
@@ -140,6 +145,16 @@ def build_native_sim_command(
             continue
         cmd.append(f"{rule['flag']}={value}")
 
+    # For native_sim interactive automation, map a UART to process stdin/stdout
+    # so shell input over the WebSocket path reaches the app directly.
+    if bool(structured_options.get("stdinout_uart")):
+        uart_name = str(structured_options.get("stdinout_uart_name") or "uart").strip()
+        if uart_name:
+            normalized = uart_name.lstrip("-")
+            if not normalized.endswith("_stdinout"):
+                normalized = f"{normalized}_stdinout"
+            cmd.append(f"-{normalized}")
+
     cmd.extend(parse_extra_args(extra_args))
     return cmd
 
@@ -237,6 +252,8 @@ def parse_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
 class ZephyrHandler(BaseHTTPRequestHandler):
     docker_client = docker.from_env()
+    interactive_sessions: dict[str, dict[str, Any]] = {}
+    interactive_sessions_lock = threading.Lock()
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         data = json.dumps(payload).encode("utf-8")
@@ -253,8 +270,67 @@ class ZephyrHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    @classmethod
+    def _set_session(cls, container_id: str, data: dict[str, Any]) -> None:
+        with cls.interactive_sessions_lock:
+            cls.interactive_sessions[container_id] = data
+
+    @classmethod
+    def _get_session(cls, container_id: str) -> dict[str, Any] | None:
+        with cls.interactive_sessions_lock:
+            return cls.interactive_sessions.get(container_id)
+
+    @classmethod
+    def _pop_session(cls, container_id: str) -> dict[str, Any] | None:
+        with cls.interactive_sessions_lock:
+            return cls.interactive_sessions.pop(container_id, None)
+
+    @classmethod
+    def _touch_session(cls, container_id: str) -> None:
+        with cls.interactive_sessions_lock:
+            session = cls.interactive_sessions.get(container_id)
+            if session is not None:
+                session["last_activity"] = time.time()
+
+    @staticmethod
+    def _to_http_environ(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+        environ: dict[str, Any] = {
+            "REQUEST_METHOD": "GET",
+            "werkzeug.socket": handler.connection,
+        }
+        for key, value in handler.headers.items():
+            header_key = f"HTTP_{key.upper().replace('-', '_')}"
+            environ[header_key] = value
+        return environ
+
+    @staticmethod
+    def _safe_close(resource: Any) -> None:
+        if resource is None:
+            return
+        try:
+            resource.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    @classmethod
+    def _stop_transport(cls, container_id: str) -> None:
+        session = cls._get_session(container_id)
+        if not session:
+            return
+        stop_event = session.get("stop_event")
+        if isinstance(stop_event, threading.Event):
+            stop_event.set()
+        cls._safe_close(session.get("ws"))
+        cls._safe_close(session.get("raw_socket"))
+        cls._safe_close(session.get("attach_socket"))
+
     def do_GET(self) -> None:  # noqa: N802
-        if self.path != "/":
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/ws/"):
+            self._handle_ws(parsed.path)
+            return
+
+        if parsed.path != "/":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
 
@@ -265,6 +341,129 @@ class ZephyrHandler(BaseHTTPRequestHandler):
 
         content = index_path.read_bytes()
         self._send_text(HTTPStatus.OK, content, "text/html; charset=utf-8")
+
+    def _handle_ws(self, ws_path: str) -> None:
+        container_id = ws_path.removeprefix("/ws/").strip()
+        if not container_id:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "container_id is required"})
+            return
+
+        session = self._get_session(container_id)
+        if not session:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "interactive session not found"})
+            return
+
+        if self.headers.get("Upgrade", "").lower() != "websocket":
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "websocket upgrade required"})
+            return
+
+        try:
+            container = self.docker_client.containers.get(container_id)
+        except NotFound:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "container not found"})
+            return
+        except DockerException as exc:
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"docker error: {exc}"})
+            return
+
+        stop_event = session.get("stop_event")
+        if not isinstance(stop_event, threading.Event):
+            stop_event = threading.Event()
+            session["stop_event"] = stop_event
+
+        try:
+            ws = WebSocketServer.accept(
+                self._to_http_environ(self),
+                ping_interval=25,
+                max_message_size=65536,
+            )
+            attach_socket = container.attach_socket(
+                params={
+                    "stdin": 1,
+                    "stdout": 1,
+                    "stderr": 1,
+                    "stream": 1,
+                    "logs": 1,
+                }
+            )
+            raw_socket = getattr(attach_socket, "_sock", attach_socket)
+            if hasattr(raw_socket, "settimeout"):
+                raw_socket.settimeout(1.0)
+
+            session["ws"] = ws
+            session["attach_socket"] = attach_socket
+            session["raw_socket"] = raw_socket
+
+            def reader_loop() -> None:
+                while not stop_event.is_set():
+                    try:
+                        chunk = raw_socket.recv(4096)
+                    except socket.timeout:
+                        continue
+                    except Exception:  # noqa: BLE001
+                        break
+                    if not chunk:
+                        break
+                    self._touch_session(container_id)
+                    try:
+                        ws.send(chunk.decode("utf-8", errors="replace"))
+                    except Exception:  # noqa: BLE001
+                        break
+                stop_event.set()
+
+            def writer_loop() -> None:
+                idle_timeout = max(1, int(session.get("idle_timeout") or 30))
+                while not stop_event.is_set():
+                    try:
+                        message = ws.receive(timeout=1)
+                    except ConnectionClosed:
+                        break
+                    except Exception:  # noqa: BLE001
+                        break
+
+                    if message is None:
+                        last_activity = float(session.get("last_activity") or time.time())
+                        if time.time() - last_activity > idle_timeout:
+                            try:
+                                container.stop(timeout=2)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            break
+                        continue
+
+                    self._touch_session(container_id)
+                    payload = message.encode("utf-8") if isinstance(message, str) else message
+                    if payload is None:
+                        continue
+                    try:
+                        raw_socket.send(payload)
+                    except Exception:  # noqa: BLE001
+                        break
+                stop_event.set()
+
+            reader_thread = threading.Thread(target=reader_loop, daemon=True)
+            writer_thread = threading.Thread(target=writer_loop, daemon=True)
+            session["reader_thread"] = reader_thread
+            session["writer_thread"] = writer_thread
+
+            reader_thread.start()
+            writer_thread.start()
+            reader_thread.join()
+            writer_thread.join()
+        except Exception:  # noqa: BLE001
+            self._safe_close(session.get("ws"))
+        finally:
+            stop_event.set()
+            self._safe_close(session.get("ws"))
+            self._safe_close(session.get("raw_socket"))
+            self._safe_close(session.get("attach_socket"))
+            try:
+                container.reload()
+                if container.status == "running":
+                    container.stop(timeout=2)
+            except Exception:  # noqa: BLE001
+                pass
+            self._pop_session(container_id)
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/run":
@@ -304,6 +503,10 @@ class ZephyrHandler(BaseHTTPRequestHandler):
                 raise ValueError("structured_options must be an object")
 
             target_type = normalize_target_type(payload)
+
+            if mode == "interactive" and target_type == "native_sim":
+                structured_options.setdefault("stdinout_uart", True)
+                structured_options.setdefault("stdinout_uart_name", "uart")
 
             if target_type == "qemu":
                 board_preset = str(payload.get("board_preset", "qemu_cortex_a53")).strip()
@@ -356,6 +559,20 @@ class ZephyrHandler(BaseHTTPRequestHandler):
                 run_kwargs["auto_remove"] = True
 
             container = self.docker_client.containers.run(**run_kwargs)
+            if mode == "interactive":
+                self._set_session(
+                    container.id,
+                    {
+                        "container_id": container.id,
+                        "idle_timeout": ephemeral_timeout,
+                        "last_activity": time.time(),
+                        "stop_event": threading.Event(),
+                        "ws": None,
+                        "attach_socket": None,
+                        "raw_socket": None,
+                    },
+                )
+
             self._send_json(
                 HTTPStatus.OK,
                 {
@@ -366,6 +583,7 @@ class ZephyrHandler(BaseHTTPRequestHandler):
                     "allocated_port": allocated_port,
                     "command": command,
                     "timeout": ephemeral_timeout,
+                    "ws_path": f"/ws/{container.id}" if mode == "interactive" else None,
                 },
             )
         except ValueError as exc:
@@ -436,6 +654,7 @@ class ZephyrHandler(BaseHTTPRequestHandler):
 
             container = self.docker_client.containers.get(container_id)
             container.stop(timeout=5)
+            self._stop_transport(container_id)
             self._send_json(HTTPStatus.OK, {"status": "stopped", "container_id": container_id})
         except ValueError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -455,6 +674,7 @@ class ZephyrHandler(BaseHTTPRequestHandler):
 
             container = self.docker_client.containers.get(container_id)
             container.kill()
+            self._stop_transport(container_id)
             self._send_json(HTTPStatus.OK, {"status": "killed", "container_id": container_id})
         except ValueError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})

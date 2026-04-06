@@ -372,6 +372,25 @@ class TestNativeSimOptions(BaseTestCase):
 class TestLifecycle(BaseTestCase):
     """Test lifecycle operations: timeout, kill, stop, partial output."""
 
+    def test_interactive_run_returns_ws_path(self):
+        """Interactive /run should return a websocket path for live attach."""
+        run_result = run_interactive("infinite_loop", "native_sim", timeout=5)
+        container_id = run_result["container_id"]
+        self.assertIn("ws_path", run_result)
+        self.assertEqual(run_result.get("mode"), "interactive")
+        self.assertEqual(run_result["ws_path"], f"/ws/{container_id}")
+        status, _ = api_post("/kill", {"container_id": container_id})
+        self.assertEqual(status, 200)
+
+    def test_interactive_native_defaults_stdinout_override(self):
+        """Interactive native_sim should default to stdinout mapping for shell-like apps."""
+        run_result = run_interactive("shell_basic", "native_sim", timeout=5)
+        container_id = run_result["container_id"]
+        command = run_result.get("command") or []
+        self.assertTrue(any(arg == "-uart_stdinout" for arg in command), f"stdinout flag missing in command: {command}")
+        status, _ = api_post("/kill", {"container_id": container_id})
+        self.assertEqual(status, 200)
+
     def test_timeout_and_kill(self):
         """Timeout should auto-kill and return exit code 137 (SIGKILL)."""
         result = run_ephemeral(

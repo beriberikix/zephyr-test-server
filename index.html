@@ -11,6 +11,8 @@
       type="text/css"
     />
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
 
     <style>
       body {
@@ -130,6 +132,10 @@
                         <input id="rtcReset" type="checkbox" class="checkbox" />
                         <span class="label-text">Reset RTC on boot</span>
                       </label>
+                      <label class="label cursor-pointer justify-start gap-3 sm:col-span-2">
+                        <input id="stdinoutUart" type="checkbox" class="checkbox" checked />
+                        <span class="label-text">Map UART to stdin/stdout<span class="opacity-50 text-xs ml-1">Recommended for shell automation over interactive WebSocket</span></span>
+                      </label>
                     </div>
                     <div class="grid sm:grid-cols-2 gap-3">
                       <label class="form-control">
@@ -157,6 +163,10 @@
                       <label class="form-control">
                         <span class="label-text mb-1">Bluetooth device address</span>
                         <input id="btDev" class="input input-bordered" type="text" placeholder="127.0.0.1:1020" />
+                      </label>
+                      <label class="form-control">
+                        <span class="label-text mb-1">stdinout option stem<span class="opacity-50 text-xs ml-1">usually uart (build-dependent)</span></span>
+                        <input id="stdinoutUartName" class="input input-bordered" type="text" placeholder="uart" value="uart" />
                       </label>
                     </div>
                   </div>
@@ -244,7 +254,17 @@
               <div id="outputHeader" class="px-4 py-2 border-b border-white/10 text-xs opacity-60 flex-shrink-0">
                 Select a session to view output
               </div>
+              <div id="terminalOutput" class="flex-1 overflow-auto p-2 hidden"></div>
               <pre id="sessionOutput" class="flex-1 p-4 overflow-auto text-sm font-mono whitespace-pre-wrap">Output will appear here after a session starts.</pre>
+              <div id="interactiveInputBar" class="hidden flex border-t border-white/10 p-2 gap-2 items-center w-full">
+                <input
+                  id="interactiveInput"
+                  class="input input-bordered input-sm flex-1 bg-base-100 text-base-content"
+                  type="text"
+                  placeholder="Type input for interactive session and press Enter"
+                />
+                <button id="sendInteractiveInput" class="btn btn-sm btn-primary" type="button">Send</button>
+              </div>
             </div>
           </div>
         </div>
@@ -269,9 +289,13 @@
       const sessionsList = document.getElementById("sessionsList");
       const sessionsEmpty = document.getElementById("sessionsEmpty");
       const sessionOutput = document.getElementById("sessionOutput");
+      const terminalOutput = document.getElementById("terminalOutput");
       const outputHeader = document.getElementById("outputHeader");
       const formError = document.getElementById("formError");
       const formErrorMsg = document.getElementById("formErrorMsg");
+      const interactiveInputBar = document.getElementById("interactiveInputBar");
+      const interactiveInput = document.getElementById("interactiveInput");
+      const sendInteractiveInputBtn = document.getElementById("sendInteractiveInput");
 
       function showFormError(msg) {
         formErrorMsg.textContent = msg;
@@ -285,6 +309,8 @@
 
       const activeSessions = new Map();
       let selectedSessionId = null;
+      let terminal = null;
+      let terminalBoundSessionId = null;
 
       function applyTheme(theme) {
         htmlEl.setAttribute("data-theme", theme);
@@ -327,8 +353,10 @@
         activeSessions.set(result.container_id, {
           ...result,
           status: "running",
-          output: null,
+          output: "",
           exit_code: null,
+          ws: null,
+          ws_state: result.mode === "interactive" ? (result.ws_path ? "connecting" : "unavailable") : null,
         });
         renderSessions();
         selectSession(result.container_id);
@@ -339,18 +367,138 @@
         if (!session) return;
         session.status = waitResult.status;
         session.exit_code = waitResult.exit_code;
-        session.output = waitResult.output;
+        session.output = waitResult.output || session.output || "";
+        closeSessionSocket(session);
         renderSessions();
         if (selectedSessionId === id) renderOutput();
       }
 
       function removeSession(containerId) {
+        const session = activeSessions.get(containerId);
+        if (session) {
+          closeSessionSocket(session);
+        }
         activeSessions.delete(containerId);
         if (selectedSessionId === containerId) {
           selectedSessionId = null;
+          terminalBoundSessionId = null;
           renderOutput();
         }
         renderSessions();
+      }
+
+      function wsUrl(path) {
+        const proto = window.location.protocol === "https:" ? "wss" : "ws";
+        const host = window.location.hostname === "0.0.0.0"
+          ? `localhost${window.location.port ? `:${window.location.port}` : ""}`
+          : window.location.host;
+        return `${proto}://${host}${path}`;
+      }
+
+      function stripAnsi(input) {
+        // Matches CSI and a subset of common ANSI escapes for plain-text fallback mode.
+        return String(input || "").replace(/\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g, "");
+      }
+
+      function sendInteractiveInput() {
+        if (!selectedSessionId) return;
+        const session = activeSessions.get(selectedSessionId);
+        if (!session || session.mode !== "interactive" || session.status !== "running") return;
+        const text = interactiveInput.value;
+        if (!text) return;
+        if (!session.ws || session.ws.readyState !== WebSocket.OPEN) return;
+        session.ws.send(text + "\r");
+        interactiveInput.value = "";
+      }
+
+      function ensureTerminal() {
+        if (terminal || typeof Terminal === "undefined") {
+          return;
+        }
+        terminal = new Terminal({
+          convertEol: true,
+          cursorBlink: true,
+          fontSize: 13,
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+          theme: {
+            background: "#0f172a",
+            foreground: "#e2e8f0",
+          },
+        });
+        terminal.open(terminalOutput);
+        terminal.onData((data) => {
+          if (!terminalBoundSessionId) return;
+          const session = activeSessions.get(terminalBoundSessionId);
+          if (!session || session.mode !== "interactive" || session.status !== "running") return;
+          if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+            session.ws.send(data);
+          }
+        });
+      }
+
+      function closeSessionSocket(session) {
+        if (!session || !session.ws) return;
+        try {
+          session.ws.onopen = null;
+          session.ws.onmessage = null;
+          session.ws.onerror = null;
+          session.ws.onclose = null;
+          session.ws.close();
+        } catch (error) {
+          // Best-effort close; nothing else needed.
+        }
+        session.ws = null;
+      }
+
+      function connectInteractiveSession(session) {
+        if (!session || session.mode !== "interactive" || !session.ws_path) return;
+        if (session.ws && (session.ws.readyState === WebSocket.OPEN || session.ws.readyState === WebSocket.CONNECTING)) {
+          return;
+        }
+
+        const ws = new WebSocket(wsUrl(session.ws_path));
+        session.ws = ws;
+        session.ws_state = "connecting";
+
+        ws.onopen = () => {
+          session.ws_state = "live";
+          renderSessions();
+          if (selectedSessionId === session.container_id) {
+            renderOutput();
+          }
+        };
+
+        ws.onmessage = (event) => {
+          const chunk = typeof event.data === "string" ? event.data : "";
+          session.output = (session.output || "") + chunk;
+          if (selectedSessionId === session.container_id) {
+            if (terminal && terminalBoundSessionId === session.container_id) {
+              terminal.write(chunk);
+            } else {
+              renderOutput();
+            }
+          }
+        };
+
+        ws.onerror = () => {
+          session.ws_state = "error";
+          renderSessions();
+        };
+
+        ws.onclose = () => {
+          session.ws = null;
+          session.ws_state = "disconnected";
+          if (session.status === "running") {
+            session.status = "stopped";
+            if (!session.output) {
+              session.output = "(interactive session ended)";
+            }
+          }
+          renderSessions();
+          if (selectedSessionId === session.container_id) {
+            renderOutput();
+          }
+        };
       }
 
       function selectSession(id) {
@@ -362,6 +510,9 @@
       function renderOutput() {
         if (!selectedSessionId || !activeSessions.has(selectedSessionId)) {
           outputHeader.textContent = "Select a session to view output";
+          terminalOutput.classList.add("hidden");
+          sessionOutput.classList.remove("hidden");
+          interactiveInputBar.classList.add("hidden");
           sessionOutput.textContent = "Output will appear here after a session starts.";
           return;
         }
@@ -372,12 +523,55 @@
           `<span class="badge badge-xs badge-outline ml-2">${s.target_type}</span>` +
           `<span class="badge badge-xs ml-1">${s.mode}</span>` +
           `<span class="opacity-50 ml-2 hidden sm:inline">${s.container_id}</span>`;
-        if (s.status === "running") {
-          sessionOutput.textContent = "\u23f3 Waiting for output\u2026";
+        if (s.mode === "interactive") {
+          if (s.status === "running") {
+            interactiveInputBar.classList.remove("hidden");
+            interactiveInput.disabled = false;
+            sendInteractiveInputBtn.disabled = false;
+          } else {
+            interactiveInputBar.classList.add("hidden");
+            interactiveInput.disabled = true;
+            sendInteractiveInputBtn.disabled = true;
+          }
+
+          const hasTerminal = typeof Terminal !== "undefined";
+          if (!hasTerminal) {
+            terminalOutput.classList.add("hidden");
+            sessionOutput.classList.remove("hidden");
+            sessionOutput.textContent =
+              "xterm.js failed to load from CDN; falling back to plain log view.\n\n" +
+              (stripAnsi(s.output) || "\u23f3 Waiting for output\u2026");
+          } else {
+            sessionOutput.classList.add("hidden");
+            terminalOutput.classList.remove("hidden");
+          }
+          ensureTerminal();
+          if (terminal) {
+            if (terminalBoundSessionId !== s.container_id) {
+              terminalBoundSessionId = s.container_id;
+              terminal.clear();
+              if (s.output) {
+                terminal.write(s.output);
+              } else if (!s.ws_path) {
+                terminal.write("Interactive transport unavailable: backend did not return ws_path.\\r\\n");
+                terminal.write("Restart zephyr_test_server.py to load the WebSocket implementation.\\r\\n");
+              }
+            }
+          }
+          if (s.status === "running") {
+            connectInteractiveSession(s);
+          }
         } else {
+          terminalOutput.classList.add("hidden");
+          sessionOutput.classList.remove("hidden");
+          interactiveInputBar.classList.add("hidden");
           const ruler = "\u2500".repeat(48);
           const header = `Status: ${s.status}   Exit Code: ${s.exit_code ?? "\u2014"}\n${ruler}\n`;
-          sessionOutput.textContent = header + (s.output || "(no output)");
+          if (s.status === "running") {
+            sessionOutput.textContent = "\u23f3 Waiting for output\u2026";
+          } else {
+            sessionOutput.textContent = header + (s.output || "(no output)");
+          }
           sessionOutput.scrollTop = sessionOutput.scrollHeight;
         }
       }
@@ -392,6 +586,7 @@
           timeout: "badge-warning",
           killed: "badge-error",
           stopped: "badge-ghost",
+          error: "badge-error",
         };
 
         for (const session of activeSessions.values()) {
@@ -403,6 +598,9 @@
             ? `<span class="loading loading-spinner loading-xs mr-0.5"></span>${session.status}`
             : session.status;
           const modeColor = session.mode === "ephemeral" ? "badge-warning" : "badge-info";
+          const wsBadge = session.mode === "interactive"
+            ? `<span class="badge badge-xs badge-outline">${session.ws_state || "idle"}</span>`
+            : "";
 
           let actionButtons;
           if (isRunning) {
@@ -429,6 +627,7 @@
                   <span class="badge badge-xs badge-outline">${session.target_type}</span>
                   <span class="badge badge-xs ${modeColor} badge-outline">${session.mode}</span>
                   <span class="badge badge-xs ${statusColor}">${statusInner}</span>
+                  ${wsBadge}
                 </div>
                 <div class="text-xs font-mono opacity-70">${shortId}</div>
               </div>
@@ -471,6 +670,8 @@
           no_color: document.getElementById("noColor").checked,
           force_color: document.getElementById("forceColor").checked,
           rtc_reset: document.getElementById("rtcReset").checked,
+          stdinout_uart: document.getElementById("stdinoutUart").checked,
+          stdinout_uart_name: document.getElementById("stdinoutUartName").value.trim() || undefined,
           stop_at: parseMaybeNumber(document.getElementById("stopAt").value),
           rt_ratio: parseMaybeNumber(document.getElementById("rtRatio").value),
           seed: parseMaybeNumber(document.getElementById("seed").value),
@@ -549,6 +750,13 @@
 
       targetTypeEl.addEventListener("change", updateTargetUI);
       modeEl.addEventListener("change", updateModeUI);
+      sendInteractiveInputBtn.addEventListener("click", sendInteractiveInput);
+      interactiveInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          sendInteractiveInput();
+        }
+      });
 
       runForm.addEventListener("submit", async (event) => {
         event.preventDefault();

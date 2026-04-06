@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import socket
 import socketserver
@@ -31,6 +32,9 @@ from simple_websocket import Server as WebSocketServer
 HOST = "0.0.0.0"
 PORT = 8080
 IMAGE_NAME = "zephyr-runner"
+MAX_ACTIVE_NETWORKS = 20
+_GROUP_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,63}$")
+_HOSTNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,63}$")
 
 NATIVE_SIM_OPTIONS: dict[str, dict[str, str]] = {
     "real_time": {"type": "bool", "flag": "-rt"},
@@ -250,10 +254,158 @@ def parse_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return payload
 
 
+def validate_network_config(network: Any, mode: str) -> dict[str, Any]:
+    """Validate and normalize the ``network`` field from a /run payload.
+
+    Returns a dict with optional keys ``expose``, ``group``, ``hostname``.
+    """
+    if network is None:
+        return {}
+    if not isinstance(network, dict):
+        raise ValueError("network must be an object")
+
+    expose_raw = network.get("expose")
+    group = network.get("group")
+    hostname = network.get("hostname")
+
+    # --- group requires interactive mode ---
+    if group is not None:
+        if mode != "interactive":
+            raise ValueError("network.group requires mode='interactive'")
+        group = str(group).strip()
+        if not _GROUP_RE.match(group):
+            raise ValueError(
+                "network.group must be 1-64 alphanumeric/hyphen chars starting with alnum"
+            )
+
+    # --- hostname ---
+    if hostname is not None:
+        if group is None:
+            raise ValueError("network.hostname requires network.group")
+        hostname = str(hostname).strip()
+        if not _HOSTNAME_RE.match(hostname):
+            raise ValueError(
+                "network.hostname must be 1-64 alphanumeric/hyphen chars starting with alnum"
+            )
+
+    # --- expose ---
+    expose: list[dict[str, Any]] = []
+    if expose_raw is not None:
+        if not isinstance(expose_raw, list):
+            raise ValueError("network.expose must be an array")
+        if len(expose_raw) > 10:
+            raise ValueError("network.expose limited to 10 entries")
+        for entry in expose_raw:
+            if not isinstance(entry, dict):
+                raise ValueError("each network.expose entry must be an object")
+            port = entry.get("port")
+            protocol = str(entry.get("protocol", "tcp")).strip().lower()
+            if not isinstance(port, int) or port < 1 or port > 65535:
+                raise ValueError("network.expose port must be an integer 1-65535")
+            if protocol not in {"tcp", "udp"}:
+                raise ValueError("network.expose protocol must be 'tcp' or 'udp'")
+            expose.append({"port": port, "protocol": protocol})
+
+    result: dict[str, Any] = {}
+    if expose:
+        result["expose"] = expose
+    if group:
+        result["group"] = group
+    if hostname:
+        result["hostname"] = hostname
+    return result
+
+
 class ZephyrHandler(BaseHTTPRequestHandler):
     docker_client = docker.from_env()
     interactive_sessions: dict[str, dict[str, Any]] = {}
     interactive_sessions_lock = threading.Lock()
+
+    # --- Network lifecycle state ---
+    _network_lock = threading.Lock()
+    _container_networks: dict[str, str] = {}      # container_id → network_name (expose-only)
+    _container_groups: dict[str, str] = {}         # container_id → group_name
+    _shared_networks: dict[str, str] = {}          # group_name → network_name
+    _shared_network_refs: dict[str, set[str]] = {} # group_name → {container_ids}
+
+    @classmethod
+    def _create_session_network(cls, container_id: str) -> str:
+        """Create a per-container bridge network for expose-only sessions."""
+        with cls._network_lock:
+            total = len(cls._container_networks) + len(cls._shared_networks)
+            if total >= MAX_ACTIVE_NETWORKS:
+                raise ValueError("network limit reached — stop existing sessions first")
+            net_name = f"zephyr-session-{container_id[:12]}"
+            cls.docker_client.networks.create(net_name, driver="bridge")
+            cls._container_networks[container_id] = net_name
+            return net_name
+
+    @classmethod
+    def _get_or_create_group_network(cls, group: str, container_id: str) -> str:
+        """Get or create a shared internal bridge for a group."""
+        with cls._network_lock:
+            if group in cls._shared_networks:
+                net_name = cls._shared_networks[group]
+                cls._shared_network_refs[group].add(container_id)
+                cls._container_groups[container_id] = group
+                return net_name
+            total = len(cls._container_networks) + len(cls._shared_networks)
+            if total >= MAX_ACTIVE_NETWORKS:
+                raise ValueError("network limit reached — stop existing sessions first")
+            net_name = f"zephyr-group-{group}"
+            cls.docker_client.networks.create(net_name, driver="bridge", internal=True)
+            cls._shared_networks[group] = net_name
+            cls._shared_network_refs[group] = {container_id}
+            cls._container_groups[container_id] = group
+            return net_name
+
+    @classmethod
+    def _cleanup_container_network(cls, container_id: str) -> None:
+        """Remove per-session network or deref shared group network."""
+        with cls._network_lock:
+            # Per-session network (expose-only, no group)
+            net_name = cls._container_networks.pop(container_id, None)
+            if net_name:
+                try:
+                    net = cls.docker_client.networks.get(net_name)
+                    net.remove()
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+
+            # Shared group network
+            group = cls._container_groups.pop(container_id, None)
+            if not group:
+                return
+            refs = cls._shared_network_refs.get(group)
+            if refs:
+                refs.discard(container_id)
+                if not refs:
+                    del cls._shared_network_refs[group]
+                    net_name = cls._shared_networks.pop(group, None)
+                    if net_name:
+                        try:
+                            net = cls.docker_client.networks.get(net_name)
+                            net.remove()
+                        except Exception:  # noqa: BLE001
+                            pass
+
+    @classmethod
+    def _cleanup_stale_networks(cls) -> None:
+        """Remove leftover zephyr-session-*/zephyr-group-* networks from prior runs."""
+        try:
+            for net in cls.docker_client.networks.list():
+                if net.name and (
+                    net.name.startswith("zephyr-session-")
+                    or net.name.startswith("zephyr-group-")
+                ):
+                    try:
+                        net.remove()
+                        print(f"  Removed stale network: {net.name}")
+                    except Exception:  # noqa: BLE001
+                        print(f"  Warning: could not remove stale network {net.name}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  Warning: stale network cleanup failed: {exc}")
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         data = json.dumps(payload).encode("utf-8")
@@ -463,6 +615,7 @@ class ZephyrHandler(BaseHTTPRequestHandler):
                     container.stop(timeout=2)
             except Exception:  # noqa: BLE001
                 pass
+            self._cleanup_container_network(container_id)
             self._pop_session(container_id)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -482,6 +635,9 @@ class ZephyrHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def _handle_run(self) -> None:
+        net_name_to_cleanup: str | None = None
+        container_created = False
+        container_id: str | None = None
         try:
             payload = parse_json_body(self)
             binary_path = str(payload.get("binary_path", "")).strip()
@@ -502,9 +658,16 @@ class ZephyrHandler(BaseHTTPRequestHandler):
             if not isinstance(structured_options, dict):
                 raise ValueError("structured_options must be an object")
 
+            # --- Network config ---
+            net_cfg = validate_network_config(payload.get("network"), mode)
+            expose = net_cfg.get("expose", [])
+            group = net_cfg.get("group")
+            hostname = net_cfg.get("hostname")
+            has_networking = bool(expose) or bool(group)
+
             target_type = normalize_target_type(payload)
 
-            if mode == "interactive" and target_type == "native_sim":
+            if mode == "interactive" and target_type == "native_sim" and not has_networking:
                 structured_options.setdefault("stdinout_uart", True)
                 structured_options.setdefault("stdinout_uart_name", "uart")
 
@@ -523,11 +686,28 @@ class ZephyrHandler(BaseHTTPRequestHandler):
                     extra_args=payload.get("extra_args"),
                 )
 
+            # Reject {port} placeholder when no networking is configured
+            if not has_networking and has_port_placeholder(command):
+                raise ValueError("{port} placeholder requires network.expose or network.group")
+
             binary_name = os.path.basename(binary_path)
             binary_inside_container = f"/app/build/{binary_name}"
 
-            allocated_port = allocate_ephemeral_port() if has_port_placeholder(command) else None
-            command = replace_placeholders(command, binary_inside_container, allocated_port)
+            # --- Port allocation from expose list ---
+            allocated_ports: dict[str, int] = {}
+            first_allocated_port: int | None = None
+            for entry in expose:
+                host_port = allocate_ephemeral_port()
+                key = f"{entry['port']}/{entry['protocol']}"
+                allocated_ports[key] = host_port
+                if first_allocated_port is None:
+                    first_allocated_port = host_port
+
+            # Legacy {port} placeholder — use first allocated port
+            if has_port_placeholder(command) and first_allocated_port is not None:
+                command = replace_placeholders(command, binary_inside_container, first_allocated_port)
+            else:
+                command = replace_placeholders(command, binary_inside_container, None)
 
             ephemeral_timeout = max(1, int(payload.get("timeout") or 30))
 
@@ -543,12 +723,36 @@ class ZephyrHandler(BaseHTTPRequestHandler):
                 "stderr": True,
             }
 
-            ports = build_container_ports(command, allocated_port)
-            if ports:
-                run_kwargs["ports"] = ports
-
-            if bool(structured_options.get("disable_network")):
+            # --- Apply network config ---
+            group_net_name: str | None = None
+            if not has_networking:
                 run_kwargs["network_mode"] = "none"
+            elif group and not expose:
+                # Group-only: start directly on the internal group network.
+                group_net_name = self._get_or_create_group_network(group, "pending")
+                net_name_to_cleanup = group_net_name
+                run_kwargs["network"] = group_net_name
+                if hostname:
+                    run_kwargs["hostname"] = hostname
+            elif group and expose:
+                # Expose + group: start on default bridge (so port publishing
+                # works), then attach to the group network post-creation.
+                group_net_name = self._get_or_create_group_network(group, "pending")
+                net_name_to_cleanup = group_net_name
+                # Don't set run_kwargs["network"] — use default bridge.
+            else:
+                # expose-only: start on default bridge, create per-session
+                # network post-creation.
+                pass
+
+            # Build port bindings from expose list (bound to 127.0.0.1)
+            if allocated_ports:
+                port_bindings: dict[str, tuple[str, int]] = {}
+                for entry in expose:
+                    key = f"{entry['port']}/{entry['protocol']}"
+                    host_port = allocated_ports[key]
+                    port_bindings[f"{entry['port']}/{entry['protocol']}"] = ("127.0.0.1", host_port)
+                run_kwargs["ports"] = port_bindings
 
             if os.path.exists("/dev/kvm"):
                 run_kwargs["devices"] = ["/dev/kvm:/dev/kvm"]
@@ -559,6 +763,40 @@ class ZephyrHandler(BaseHTTPRequestHandler):
                 run_kwargs["auto_remove"] = True
 
             container = self.docker_client.containers.run(**run_kwargs)
+            container_created = True
+            container_id = container.id
+
+            # For group networks: fix up the ref from "pending" to real container id
+            if group:
+                with self._network_lock:
+                    refs = self._shared_network_refs.get(group)
+                    if refs and "pending" in refs:
+                        refs.discard("pending")
+                        refs.add(container.id)
+                    self._container_groups.pop("pending", None)
+                    self._container_groups[container.id] = group
+                net_name_to_cleanup = None  # success — don't rollback
+
+                # expose+group: container started on default bridge, now
+                # also connect to the internal group network.
+                if expose and group_net_name:
+                    try:
+                        net_obj = self.docker_client.networks.get(group_net_name)
+                        aliases = [hostname] if hostname else None
+                        net_obj.connect(container, aliases=aliases)
+                    except Exception:
+                        pass  # port publishing still works via default bridge
+
+            # For expose-only (no group): create per-session network and reconnect
+            if expose and not group:
+                try:
+                    net_name = self._create_session_network(container.id)
+                    net_obj = self.docker_client.networks.get(net_name)
+                    net_obj.connect(container)
+                except Exception:
+                    # Container already running on default bridge; expose ports still work
+                    pass
+
             if mode == "interactive":
                 self._set_session(
                     container.id,
@@ -580,17 +818,24 @@ class ZephyrHandler(BaseHTTPRequestHandler):
                     "mode": mode,
                     "target_type": target_type,
                     "container_id": container.id,
-                    "allocated_port": allocated_port,
+                    "allocated_ports": allocated_ports if allocated_ports else None,
+                    "network": net_cfg if net_cfg else None,
                     "command": command,
                     "timeout": ephemeral_timeout,
                     "ws_path": f"/ws/{container.id}" if mode == "interactive" else None,
                 },
             )
         except ValueError as exc:
+            if net_name_to_cleanup:
+                self._cleanup_container_network("pending")
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except DockerException as exc:
+            if net_name_to_cleanup:
+                self._cleanup_container_network("pending")
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"docker error: {exc}"})
         except Exception as exc:  # noqa: BLE001
+            if net_name_to_cleanup:
+                self._cleanup_container_network("pending")
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
     def _handle_wait(self) -> None:
@@ -619,6 +864,7 @@ class ZephyrHandler(BaseHTTPRequestHandler):
                 container.remove(force=True)
             except Exception:  # noqa: BLE001
                 pass
+            self._cleanup_container_network(container_id)
 
             # exit_code 137 = killed by SIGKILL
             if exit_code == 137 and not timed_out:
@@ -655,6 +901,7 @@ class ZephyrHandler(BaseHTTPRequestHandler):
             container = self.docker_client.containers.get(container_id)
             container.stop(timeout=5)
             self._stop_transport(container_id)
+            self._cleanup_container_network(container_id)
             self._send_json(HTTPStatus.OK, {"status": "stopped", "container_id": container_id})
         except ValueError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -675,6 +922,7 @@ class ZephyrHandler(BaseHTTPRequestHandler):
             container = self.docker_client.containers.get(container_id)
             container.kill()
             self._stop_transport(container_id)
+            self._cleanup_container_network(container_id)
             self._send_json(HTTPStatus.OK, {"status": "killed", "container_id": container_id})
         except ValueError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -693,6 +941,8 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 
 
 def main() -> None:
+    print("Cleaning up stale Docker networks...")
+    ZephyrHandler._cleanup_stale_networks()
     server = ThreadedHTTPServer((HOST, PORT), ZephyrHandler)
     print(f"Zephyr orchestrator listening on http://{HOST}:{PORT}")
     try:

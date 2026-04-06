@@ -203,9 +203,17 @@
                   </div>
 
                   <div class="grid sm:grid-cols-2 gap-3">
-                    <label class="label cursor-pointer justify-start gap-3">
-                      <input id="disableNetwork" type="checkbox" class="checkbox" />
-                      <span class="label-text">Disable networking<span class="opacity-50 text-xs ml-1">Isolate container from host network</span></span>
+                    <label class="form-control">
+                      <span class="label-text mb-1">Exposed ports<span class="opacity-50 text-xs ml-1">Publish to 127.0.0.1; leave empty for no internet access</span></span>
+                      <input id="networkPorts" class="input input-bordered" type="text" placeholder="4242/tcp, 8080/udp" />
+                    </label>
+                    <label class="form-control">
+                      <span class="label-text mb-1">Network group<span class="opacity-50 text-xs ml-1">Sessions in the same group can communicate (interactive only)</span></span>
+                      <input id="networkGroup" class="input input-bordered" type="text" placeholder="my-test-group" />
+                    </label>
+                    <label class="form-control">
+                      <span class="label-text mb-1">Hostname<span class="opacity-50 text-xs ml-1">DNS name within a network group</span></span>
+                      <input id="networkHostname" class="input input-bordered" type="text" placeholder="server" />
                     </label>
                     <label class="form-control sm:col-span-1">
                       <span class="label-text mb-1">Extra arguments<span class="opacity-50 text-xs ml-1">Raw CLI flags appended to the command</span></span>
@@ -628,6 +636,9 @@
                   <span class="badge badge-xs ${modeColor} badge-outline">${session.mode}</span>
                   <span class="badge badge-xs ${statusColor}">${statusInner}</span>
                   ${wsBadge}
+                  ${session.network && session.network.group ? `<span class="badge badge-xs badge-accent badge-outline">group:${session.network.group}</span>` : ""}
+                  ${session.network && session.network.expose ? `<span class="badge badge-xs badge-secondary badge-outline">net:${session.network.expose.length}p</span>` : ""}
+                  ${!session.network || (!session.network.group && !session.network.expose) ? '<span class="badge badge-xs badge-ghost">isolated</span>' : ""}
                 </div>
                 <div class="text-xs font-mono opacity-70">${shortId}</div>
               </div>
@@ -648,9 +659,7 @@
       }
 
       function buildStructuredOptions(targetType) {
-        const shared = {
-          disable_network: document.getElementById("disableNetwork").checked,
-        };
+        const shared = {};
 
         if (targetType === "qemu") {
           return {
@@ -679,6 +688,22 @@
           testargs: document.getElementById("testargs").value.trim() || undefined,
           bt_dev: document.getElementById("btDev").value.trim() || undefined,
         };
+      }
+
+      function buildNetworkConfig() {
+        const cfg = {};
+        const portsRaw = document.getElementById("networkPorts").value.trim();
+        if (portsRaw) {
+          cfg.expose = portsRaw.split(",").map(s => s.trim()).filter(Boolean).map(s => {
+            const [portStr, proto] = s.split("/");
+            return { port: Number(portStr), protocol: (proto || "tcp").toLowerCase() };
+          });
+        }
+        const group = document.getElementById("networkGroup").value.trim();
+        if (group) cfg.group = group;
+        const hostname = document.getElementById("networkHostname").value.trim();
+        if (hostname) cfg.hostname = hostname;
+        return Object.keys(cfg).length ? cfg : undefined;
       }
 
       async function waitRequest(containerId, timeout) {
@@ -769,6 +794,7 @@
           target_type: targetType,
           board_preset: targetType === "qemu" ? boardPresetEl.value : undefined,
           structured_options: buildStructuredOptions(targetType),
+          network: buildNetworkConfig(),
           extra_args: document.getElementById("extraArgs").value,
           timeout: Number(document.getElementById("ephemeralTimeout").value) || 30,
         };

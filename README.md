@@ -158,6 +158,114 @@ Stop interactive container:
 curl -sS -X POST http://localhost:8080/stop \
   -H 'Content-Type: application/json' \
   -d "{\"container_id\":\"$CID\"}" | jq
+```
+
+### F) Networking: expose ports to localhost
+
+Run a TCP echo server with port 4242 published to 127.0.0.1:
+
+```bash
+RESP=$(curl -sS -X POST http://localhost:8080/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "binary_path": "/absolute/path/to/tcp_echo_server/zephyr.exe",
+    "target_type": "native_sim",
+    "mode": "interactive",
+    "network": {
+      "expose": [{"port": 4242, "protocol": "tcp"}]
+    }
+  }')
+
+echo "$RESP" | jq
+# allocated_ports shows {"4242/tcp": <host_port>}
+HOST_PORT=$(echo "$RESP" | jq -r '.allocated_ports["4242/tcp"]')
+echo "hello" | nc 127.0.0.1 "$HOST_PORT"
+```
+
+### G) Networking: shared group (inter-session)
+
+Start a server in a named group:
+
+```bash
+RESP_A=$(curl -sS -X POST http://localhost:8080/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "binary_path": "/absolute/path/to/tcp_echo_server/zephyr.exe",
+    "target_type": "native_sim",
+    "mode": "interactive",
+    "network": {
+      "group": "my-group",
+      "hostname": "server"
+    }
+  }')
+echo "$RESP_A" | jq
+```
+
+Start a client in the same group (it can reach `server` by hostname):
+
+```bash
+RESP_B=$(curl -sS -X POST http://localhost:8080/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "binary_path": "/absolute/path/to/tcp_echo_client/zephyr.exe",
+    "target_type": "native_sim",
+    "mode": "interactive",
+    "network": {
+      "group": "my-group",
+      "hostname": "client"
+    },
+    "structured_options": {
+      "testargs": "server 4242"
+    }
+  }')
+echo "$RESP_B" | jq
+```
+
+### H) Networking: combined expose + group
+
+A session can have both — ports published to localhost AND inter-session connectivity:
+
+```bash
+curl -sS -X POST http://localhost:8080/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "binary_path": "/absolute/path/to/tcp_echo_server/zephyr.exe",
+    "target_type": "native_sim",
+    "mode": "interactive",
+    "network": {
+      "expose": [{"port": 4242, "protocol": "tcp"}],
+      "group": "my-group",
+      "hostname": "server"
+    }
+  }' | jq
+```
+
+## Network configuration reference
+
+The top-level `network` field in `/run` controls container networking. By default (omitted or `{}`), containers have **no network access**.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `expose` | `[{port, protocol}]` | Publish ports to `127.0.0.1`. Max 10 entries. |
+| `group` | `string` | Join a named internal Docker bridge. Requires `mode=interactive`. |
+| `hostname` | `string` | Container hostname within the group (for DNS). Requires `group`. |
+
+**Behavior matrix:**
+
+| `expose` | `group` | Result |
+|----------|---------|--------|
+| omitted | omitted | Fully isolated (`network_mode=none`) |
+| set | omitted | Per-session bridge + ports on 127.0.0.1 |
+| omitted | set | Internal shared bridge, no host ports |
+| set | set | Internal shared bridge + ports on 127.0.0.1 |
+
+**Constraints:**
+- Port numbers: 1–65535, protocol: `tcp` or `udp`
+- Group: alphanumeric + hyphen, 1–64 chars
+- Hostname: alphanumeric + hyphen, 1–64 chars, requires group
+- Max 20 active networks across all sessions (503 if exceeded)
+- Stale networks from prior server crashes are cleaned on startup
+
 ## 6) Run E2E test suite
 
 The repository includes a comprehensive end-to-end test suite (`test_e2e.py`) that validates all API endpoints, structured options, and lifecycle behaviors against 16 pre-built Zephyr test binaries.
@@ -195,16 +303,19 @@ python test_e2e.py
 
 ### Test Coverage
 
-The test suite (`test_e2e.py`) includes 30+ test methods across 6 test classes:
+The test suite (`test_e2e.py`) includes 40+ test methods across 9 test classes:
 
 | Class | Tests | Coverage |
 |-------|-------|----------|
 | `TestServeIndex` | 1 | GET / endpoint, HTML serving |
 | `TestValidation` | 7 | Error cases: missing path, relative paths, invalid modes, nonexistent containers |
 | `TestNativeSimEphemeral` | 4 | hello_world, exit_codes, ztest_pass, ztest_fail |
-| `TestNativeSimOptions` | 5 | stop_at, seed, rtc_reset, testargs, disable_network |
-| `TestLifecycle` | 5 | Timeout+kill, interactive ws_path contract, native_sim stdinout default mapping, interactive stop/kill, partial output |
-| `TestQemuEphemeral` | 3 | qemu_cortex_a53, SMP, GDB debug (skipped if QEMU unavailable) |
+| `TestNativeSimOptions` | 6 | stop_at, seed, rtc_reset, testargs, network_none_default, network_none_explicit |
+| `TestLifecycle` | 6 | Timeout+kill, interactive ws_path, stdinout mapping, stop/kill, partial output |
+| `TestQemuEphemeral` | 3 | qemu_cortex_a53, SMP, GDB debug (skipped if unavailable) |
+| `TestNetworkValidation` | 7 | Invalid port range, invalid protocol, invalid group, group requires interactive, too many ports, hostname requires group |
+| `TestNetworkExpose` | 1 | TCP echo via exposed port on 127.0.0.1 |
+| `TestNetworkGroup` | 3 | Group-only inter-session, combined expose+group, cross-group isolation |
 
 ```
 
